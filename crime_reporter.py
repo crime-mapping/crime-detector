@@ -9,9 +9,9 @@ load_dotenv()
 
 def get_emergency_level(score: float) -> str:
     """Maps confidence score to emergency level."""
-    if score > 0.85:
+    if score > 0.9:
         return "HIGH"
-    elif score > 0.65:
+    elif score > 0.8:
         return "MEDIUM"
     else:
         return "LOW"

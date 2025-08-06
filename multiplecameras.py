@@ -1,5 +1,3 @@
-
-
 import os
 import cv2
 import threading
@@ -16,6 +14,7 @@ from crime_reporter import CRIME_TYPE_MAP, send_crime_to_api, get_emergency_leve
 crime_model = AutoModelForImageClassification.from_pretrained(
     "NyanjaCyane/crime-detector", ignore_mismatched_sizes=True
 )
+
 crime_processor = AutoImageProcessor.from_pretrained("NyanjaCyane/crime-detector")
 crime_model.classifier = torch.nn.Linear(in_features=768, out_features=2)
 
@@ -28,6 +27,21 @@ crime_type_model.classifier = torch.nn.Linear(in_features=768, out_features=13) 
 headers = {
         "model-api-key": os.getenv("MODEL_API_KEY"), 
 }
+
+# Fetch all admins from API
+def fetch_users():
+    try:
+        response = requests.get("https://smart-surveillance-system.onrender.com/api/users/model-access",headers=headers)
+        response.raise_for_status()
+        users = response.json()
+        return [
+            user for user in users
+            if user.get("email") and user.get("active") is True
+        ]
+    except Exception as e:
+        print("❌ Failed to fetch users:", e)
+        return []
+
 # Fetch camera URLs from API
 def fetch_camera_urls():
     try:
@@ -77,7 +91,7 @@ def process_camera(camera):
                 crime_score = probs[0].max().item()
                 predicted_label = crime_model.config.id2label.get(probs[0].argmax().item(), "Unknown")
 
-            if crime_score > 0.5 and predicted_label == "Crime":
+            if crime_score > 0.7 and predicted_label != "Normal":
                 print(f"[{camera_name}] 🚨 Detected Crime! Score: {round(crime_score, 3)}")
                 inputs = crime_type_processor(images=pil_image, return_tensors="pt")
                 with torch.no_grad():
@@ -93,8 +107,16 @@ def process_camera(camera):
                 predicted_label_raw = crime_type_model.config.id2label.get(top_label_index, "Unknown")
                 crime_type_enum = CRIME_TYPE_MAP.get(predicted_label_raw, "STEALING")  
 
+                 # Classify severity
+                if top_label_score >= 0.9:
+                   severity_level = "HIGH"
+                elif top_label_score >= 0.8:
+                   severity_level = "MEDIUM"
+                else:
+                   severity_level = "LOW"
 
-                send_alert(camera_name, top_label, top_label_score)
+                users = fetch_users()
+                send_alert(users,camera_name, top_label, top_label_score,severity_level)
                 image_url = upload_image_to_cloudinary(pil_image)
                 emergency_level = get_emergency_level(top_label_score)
                 # TODO: Add notification saving option
@@ -102,7 +124,7 @@ def process_camera(camera):
                 send_crime_to_api(
                     camera_name=camera_name,
                     crime_type=crime_type_enum,
-                    emergency_level=emergency_level,
+                    emergency_level=severity_level,
                     image_url=image_url,
                     location_id=location_id,
                     location_name=location_name,
