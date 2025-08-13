@@ -1,0 +1,7 @@
+torch
+opencv-python
+transformers
+pillow
+python-dotenv
+cloudinary
+requests

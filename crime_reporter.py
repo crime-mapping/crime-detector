@@ -48,7 +48,7 @@ def send_crime_to_api(camera_name: str, crime_type: str, emergency_level: str, i
     }
 
     try:
-        response = requests.post("https://smart-surveillance-system.onrender.com/api/crimes", json=payload, headers=headers)
+        response = requests.post("http://localhost:3000/api/crimes", json=payload, headers=headers)
         print(f"📤 Crime sent - Status: {response.status_code}")
         print(response.json())
     except Exception as e:

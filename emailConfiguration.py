@@ -34,14 +34,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def send_alert(users,camera_name, crime_type, severity_score, severity_level):
+def send_alert(users, camera_name, crime_type, severity_score, severity_level):
     subject = f"🚨 Crime Alert: {crime_type} detected!"
 
     # Color mapping
     colors = {
-        "LOW": "#FFF8E1",       # light yellow
-        "MEDIUM": "#FFECB3",    # amber
-        "HIGH": "#FFCDD2",      # light red
+        "LOW": "#FFF8E1",
+        "MEDIUM": "#FFECB3",
+        "HIGH": "#FFCDD2",
     }
     bg_color = colors.get(severity_level, "#FFFFFF")
 
@@ -52,27 +52,30 @@ def send_alert(users,camera_name, crime_type, severity_score, severity_level):
         <p><strong>Type:</strong> {crime_type}</p>
         <p><strong>Location:</strong> {camera_name}</p>
         <p><strong>Severity Score:</strong> {round(severity_score, 3)} ({severity_level.title()})</p>
-        <p>Please review the incident in your dashboard immediately.</p>
+        <p>Please <a href='http://localhost:3000/reports'>login</a> into the system to review the incident in your dashboard immediately.</p>
     </body>
     </html>
     """
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = "noreply@smartsurveillancesystem.com"
-
-    mime_text = MIMEText(html_body, "html")
-    msg.attach(mime_text)
 
     try:
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
         server.login("ishimwe.nyanja@gmail.com", os.getenv("EMAIL_PASSWORD"))
+
         for user in users:
             if user.get("email"):
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = subject
+                msg["From"] = "noreply@smartsurveillancesystem.com"
                 msg["To"] = user["email"]
+
+                mime_text = MIMEText(html_body, "html")
+                msg.attach(mime_text)
+
                 server.sendmail(msg["From"], msg["To"], msg.as_string())
                 print(f"📧 Alert email sent to {user['email']}")
+
         server.quit()
+
     except Exception as e:
         print(f"❌ Email failed: {e}")

@@ -1,3 +1,176 @@
+# import os
+# import cv2
+# import threading
+# import torch
+# import requests
+# import time
+# from transformers import AutoModelForImageClassification, AutoImageProcessor
+# from PIL import Image
+# from emailConfiguration import send_alert
+# from image_uploader import upload_image_to_cloudinary
+# from crime_reporter import CRIME_TYPE_MAP, send_crime_to_api, get_emergency_level
+
+# # Load models
+# crime_model = AutoModelForImageClassification.from_pretrained(
+#     "NyanjaCyane/crime-detector", ignore_mismatched_sizes=True
+# )
+
+# crime_processor = AutoImageProcessor.from_pretrained("NyanjaCyane/crime-detector")
+# crime_model.classifier = torch.nn.Linear(in_features=768, out_features=2)
+
+# crime_type_model = AutoModelForImageClassification.from_pretrained(
+#     "NyanjaCyane/crimes-classifier", ignore_mismatched_sizes=True
+# )
+# crime_type_processor = AutoImageProcessor.from_pretrained("NyanjaCyane/crimes-classifier")
+# crime_type_model.classifier = torch.nn.Linear(in_features=768, out_features=13)  # Ensure 13 crimes supported
+
+# headers = {
+#         "model-api-key": os.getenv("MODEL_API_KEY"), 
+# }
+
+# # Fetch all admins from API
+# def fetch_users():
+#     try:
+#         response = requests.get("https://smart-surveillance-system.onrender.com/api/users/model-access",headers=headers)
+#         response.raise_for_status()
+#         users = response.json()
+#         return [
+#             user for user in users
+#             if user.get("email") and user.get("active") is True
+#         ]
+#     except Exception as e:
+#         print("❌ Failed to fetch users:", e)
+#         return []
+
+# # Fetch camera URLs from API
+# def fetch_camera_urls():
+#     try:
+#         response = requests.get("https://smart-surveillance-system.onrender.com/api/cameras",headers=headers)
+#         response.raise_for_status()
+#         cameras = response.json()
+#         return [
+#             cam for cam in cameras
+#             if cam.get("streamUrl") and isinstance(cam.get("location"), dict)
+#         ]
+#     except Exception as e:
+#         print("❌ Failed to fetch camera URLs:", e)
+#         return []
+
+# real_cameras = fetch_camera_urls()
+
+# # Process each camera stream
+# def process_camera(camera):
+#     camera_source = camera["streamUrl"].strip()
+#     camera_name = camera.get("name", "Unnamed Camera")
+#     location_id = camera["location"]["_id"]
+#     location_name = camera["location"]["location"]
+
+#     cap = cv2.VideoCapture(camera_source)
+
+#     if not cap.isOpened():
+#         print(f"❌ Error: Could not open {camera_name}")
+#         return
+
+#     print(f"✅ Processing {camera_name}...")
+
+#     while cap.isOpened():
+#         ret, frame = cap.read()
+#         if not ret:
+#             print(f"⚠️ Lost frame from {camera_name}")
+#             break
+
+#         try:
+#             image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+#             pil_image = Image.fromarray(image)
+#             inputs = crime_processor(images=pil_image, return_tensors="pt")
+
+#             with torch.no_grad():
+#                 outputs = crime_model(**inputs)
+#                 logits = outputs.logits
+#                 probs = torch.softmax(logits, dim=1)
+#                 crime_score = probs[0].max().item()
+#                 predicted_label = crime_model.config.id2label.get(probs[0].argmax().item(), "Unknown")
+
+#             if crime_score > 0.7 and predicted_label != "Normal":
+#                 print(f"[{camera_name}] 🚨 Detected Crime! Score: {round(crime_score, 3)}")
+#                 inputs = crime_type_processor(images=pil_image, return_tensors="pt")
+#                 with torch.no_grad():
+#                     outputs = crime_type_model(**inputs)
+#                     logits = outputs.logits
+#                     probs = torch.softmax(logits, dim=1)
+#                     k = min(5, probs.shape[1])
+#                     top_probs, top_indices = torch.topk(probs[0], k)
+
+#                 top_label_index = top_indices[0].item()
+#                 top_label_score = top_probs[0].item()
+#                 top_label = crime_type_model.config.id2label.get(top_label_index, "Unknown")
+#                 predicted_label_raw = crime_type_model.config.id2label.get(top_label_index, "Unknown")
+#                 crime_type_enum = CRIME_TYPE_MAP.get(predicted_label_raw, "STEALING")  
+
+#                  # Classify severity
+#                 if top_label_score >= 0.9:
+#                    severity_level = "HIGH"
+#                 elif top_label_score >= 0.8:
+#                    severity_level = "MEDIUM"
+#                 else:
+#                    severity_level = "LOW"
+
+#                 users = fetch_users()
+#                 send_alert(users,camera_name, top_label, top_label_score,severity_level)
+#                 image_url = upload_image_to_cloudinary(pil_image)
+#                 emergency_level = get_emergency_level(top_label_score)
+#                 # TODO: Add notification saving option
+
+#                 send_crime_to_api(
+#                     camera_name=camera_name,
+#                     crime_type=crime_type_enum,
+#                     emergency_level=severity_level,
+#                     image_url=image_url,
+#                     location_id=location_id,
+#                     location_name=location_name,
+#                 )
+
+#                 print(f"[{camera_name}] Top {k} crime types:")
+#                 for i in range(k):
+#                     label = crime_type_model.config.id2label.get(top_indices[i].item(), "Unknown")
+#                     score = round(top_probs[i].item(), 3)
+#                     print(f"{label}: {score}")
+
+#             time.sleep(1 / 10)  # Avoid flooding CPU
+#         except Exception as e:
+#             print(f"❌ Error processing frame from {camera_name}: {e}")
+#             break
+
+#     cap.release()
+
+# def display_video():
+#     caps = [cv2.VideoCapture(cam["streamUrl"].strip()) for cam in real_cameras]
+#     while True:
+#         frames = [cap.read()[1] for cap in caps]
+#         for i, frame in enumerate(frames):
+#             if frame is not None:
+#                 cv2.imshow(f"Camera {i}", frame)
+#         if cv2.waitKey(1) & 0xFF == ord("q"):
+#             break
+#     for cap in caps:
+#         cap.release()
+#     cv2.destroyAllWindows()
+
+# # Start processing threads
+# threads = []
+# for camera in real_cameras:
+#     thread = threading.Thread(target=process_camera, args=(camera,))
+#     thread.start()
+#     threads.append(thread)
+
+# # Show live video
+# display_video()
+
+# # Wait for detection threads
+# for thread in threads:
+#     thread.join()
+
+
 import os
 import cv2
 import threading
@@ -9,43 +182,53 @@ from PIL import Image
 from emailConfiguration import send_alert
 from image_uploader import upload_image_to_cloudinary
 from crime_reporter import CRIME_TYPE_MAP, send_crime_to_api, get_emergency_level
+from dotenv import load_dotenv
 
-# Load models
+load_dotenv()
+
+# ✅ Use GPU if available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"🖥️  Using device: {device}")
+
+# ✅ Load models only once and move to device
 crime_model = AutoModelForImageClassification.from_pretrained(
     "NyanjaCyane/crime-detector", ignore_mismatched_sizes=True
-)
+).to(device)
 
 crime_processor = AutoImageProcessor.from_pretrained("NyanjaCyane/crime-detector")
-crime_model.classifier = torch.nn.Linear(in_features=768, out_features=2)
+
+crime_model.classifier = torch.nn.Linear(in_features=768, out_features=2).to(device)
 
 crime_type_model = AutoModelForImageClassification.from_pretrained(
     "NyanjaCyane/crimes-classifier", ignore_mismatched_sizes=True
-)
+).to(device)
+
 crime_type_processor = AutoImageProcessor.from_pretrained("NyanjaCyane/crimes-classifier")
-crime_type_model.classifier = torch.nn.Linear(in_features=768, out_features=13)  # Ensure 13 crimes supported
+
+crime_type_model.classifier = torch.nn.Linear(in_features=768, out_features=13).to(device)
 
 headers = {
-        "model-api-key": os.getenv("MODEL_API_KEY"), 
+    "model-api-key": os.getenv("MODEL_API_KEY"),
 }
 
-# Fetch all admins from API
 def fetch_users():
     try:
-        response = requests.get("https://smart-surveillance-system.onrender.com/api/users/model-access",headers=headers)
+        response = requests.get(
+            "http://localhost:3000/api/users/model-access", headers=headers
+        )
         response.raise_for_status()
         users = response.json()
-        return [
-            user for user in users
-            if user.get("email") and user.get("active") is True
-        ]
+        return [user for user in users if user.get("email") and user.get("active") is True]
     except Exception as e:
         print("❌ Failed to fetch users:", e)
         return []
 
-# Fetch camera URLs from API
 def fetch_camera_urls():
     try:
-        response = requests.get("https://smart-surveillance-system.onrender.com/api/cameras",headers=headers)
+        response = requests.get(
+             "http://localhost:3000/api/cameras", headers=headers
+            # "https://smart-surveillance-system.onrender.com/api/cameras", headers=headers
+        )
         response.raise_for_status()
         cameras = response.json()
         return [
@@ -58,7 +241,9 @@ def fetch_camera_urls():
 
 real_cameras = fetch_camera_urls()
 
-# Process each camera stream
+# ✅ Frame skipping: process every Nth frame
+FRAME_SKIP = 5
+
 def process_camera(camera):
     camera_source = camera["streamUrl"].strip()
     camera_name = camera.get("name", "Unnamed Camera")
@@ -66,12 +251,13 @@ def process_camera(camera):
     location_name = camera["location"]["location"]
 
     cap = cv2.VideoCapture(camera_source)
-
     if not cap.isOpened():
         print(f"❌ Error: Could not open {camera_name}")
         return
 
     print(f"✅ Processing {camera_name}...")
+
+    frame_count = 0
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -79,10 +265,17 @@ def process_camera(camera):
             print(f"⚠️ Lost frame from {camera_name}")
             break
 
+        frame_count += 1
+        if frame_count % FRAME_SKIP != 0:
+            continue
+
         try:
             image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(image)
+
+            # Preprocess input and move to device
             inputs = crime_processor(images=pil_image, return_tensors="pt")
+            inputs = {k: v.to(device) for k, v in inputs.items()}
 
             with torch.no_grad():
                 outputs = crime_model(**inputs)
@@ -91,35 +284,38 @@ def process_camera(camera):
                 crime_score = probs[0].max().item()
                 predicted_label = crime_model.config.id2label.get(probs[0].argmax().item(), "Unknown")
 
-            if crime_score > 0.7 and predicted_label != "Normal":
+            if crime_score > 0.5 and predicted_label != "Normal":
                 print(f"[{camera_name}] 🚨 Detected Crime! Score: {round(crime_score, 3)}")
-                inputs = crime_type_processor(images=pil_image, return_tensors="pt")
+
+                # Classify crime type
+                type_inputs = crime_type_processor(images=pil_image, return_tensors="pt")
+                type_inputs = {k: v.to(device) for k, v in type_inputs.items()}
+
                 with torch.no_grad():
-                    outputs = crime_type_model(**inputs)
-                    logits = outputs.logits
-                    probs = torch.softmax(logits, dim=1)
-                    k = min(5, probs.shape[1])
-                    top_probs, top_indices = torch.topk(probs[0], k)
+                    type_outputs = crime_type_model(**type_inputs)
+                    type_logits = type_outputs.logits
+                    type_probs = torch.softmax(type_logits, dim=1)
+                    k = min(5, type_probs.shape[1])
+                    top_probs, top_indices = torch.topk(type_probs[0], k)
 
                 top_label_index = top_indices[0].item()
                 top_label_score = top_probs[0].item()
-                top_label = crime_type_model.config.id2label.get(top_label_index, "Unknown")
                 predicted_label_raw = crime_type_model.config.id2label.get(top_label_index, "Unknown")
-                crime_type_enum = CRIME_TYPE_MAP.get(predicted_label_raw, "STEALING")  
+                crime_type_enum = CRIME_TYPE_MAP.get(predicted_label_raw, "STEALING")
 
-                 # Classify severity
+                # Severity
                 if top_label_score >= 0.9:
-                   severity_level = "HIGH"
+                    severity_level = "HIGH"
                 elif top_label_score >= 0.8:
-                   severity_level = "MEDIUM"
+                    severity_level = "MEDIUM"
                 else:
-                   severity_level = "LOW"
+                    severity_level = "LOW"
 
                 users = fetch_users()
-                send_alert(users,camera_name, top_label, top_label_score,severity_level)
+                send_alert(users, camera_name, predicted_label_raw, top_label_score, severity_level)
+
                 image_url = upload_image_to_cloudinary(pil_image)
                 emergency_level = get_emergency_level(top_label_score)
-                # TODO: Add notification saving option
 
                 send_crime_to_api(
                     camera_name=camera_name,
@@ -136,19 +332,20 @@ def process_camera(camera):
                     score = round(top_probs[i].item(), 3)
                     print(f"{label}: {score}")
 
-            time.sleep(1 / 10)  # Avoid flooding CPU
+            time.sleep(0.05)  # Slight delay to reduce CPU usage
         except Exception as e:
             print(f"❌ Error processing frame from {camera_name}: {e}")
             break
 
     cap.release()
+    print(f"📴 Stopped processing {camera_name}")
 
 def display_video():
     caps = [cv2.VideoCapture(cam["streamUrl"].strip()) for cam in real_cameras]
     while True:
-        frames = [cap.read()[1] for cap in caps]
-        for i, frame in enumerate(frames):
-            if frame is not None:
+        for i, cap in enumerate(caps):
+            ret, frame = cap.read()
+            if ret:
                 cv2.imshow(f"Camera {i}", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
@@ -156,16 +353,16 @@ def display_video():
         cap.release()
     cv2.destroyAllWindows()
 
-# Start processing threads
+# ✅ Start threads
 threads = []
 for camera in real_cameras:
     thread = threading.Thread(target=process_camera, args=(camera,))
     thread.start()
     threads.append(thread)
 
-# Show live video
+# ✅ Show video feed (optional for debugging)
 display_video()
 
-# Wait for detection threads
+# ✅ Join threads
 for thread in threads:
     thread.join()
